@@ -371,12 +371,45 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Успех", "Изображение сохранено!")
 
     def reset(self):
+        """Полный сброс всех параметров и аннотаций"""
         if self.original_image is not None:
+            # Сбрасываем изображение
             self.current_image = self.original_image.copy()
             self.canvas.set_image(self.current_image)
+
+            # Очищаем аннотации
             self.rect = None
             self.keep_points = []
             self.mask = None
             self.canvas.clear_annotations()
-            # Отключаем автообновление при сбросе
+
+            # Отключаем автообновление
             self.auto_update_checkbox.setChecked(False)
+
+            # Сбрасываем режим на "Просмотр"
+            self.mode_combo.setCurrentIndex(0)  # Просмотр
+
+            # Сбрасываем параметры Canny на стандартные
+            self.threshold1 = 50
+            self.threshold2 = 150
+            self.blur_size = 5
+
+            # Обновляем UI элементы
+            self.threshold1_slider.setValue(self.threshold1)
+            self.threshold2_slider.setValue(self.threshold2)
+            self.blur_slider.setValue(self.blur_size)
+
+            self.threshold1_label.setText(f"Нижний порог: {self.threshold1}")
+            self.threshold2_label.setText(f"Верхний порог: {self.threshold2}")
+            self.blur_label.setText(f"Размытие: {self.blur_size}")
+
+            QMessageBox.information(
+                self,
+                "Сброс выполнен",
+                "Все параметры сброшены на стандартные значения:\n"
+                "• Нижний порог: 50\n"
+                "• Верхний порог: 150\n"
+                "• Размытие: 5\n"
+                "• Режим: Просмотр\n"
+                "• Автообновление: выключено"
+            )
