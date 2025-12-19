@@ -22,12 +22,8 @@ class CannyEdgeDetector:
 
         Параметры:
         - image: входное изображение (RGB)
-        - keep_points: список точек которые должны быть на границах
+        - keep_points: список точек линий которые должны быть на границах
         - offset_x, offset_y: смещение относительно исходного изображения
-
-        Возвращает:
-        - image_with_edges: изображение с нарисованными границами
-        - mask: бинарная маска объекта (заполненная область внутри контура)
         """
         # 1. Преобразование в оттенки серого
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
@@ -38,16 +34,32 @@ class CannyEdgeDetector:
         # 3. Применение алгоритма Canny
         edges = cv2.Canny(blurred, self.threshold1, self.threshold2)
 
-        # 4. Если есть точки keep, усиливаем границы рядом с ними
-        if keep_points:
+        # 4. Если есть точки keep (линии), усиливаем границы вдоль них
+        if keep_points and len(keep_points) > 0:
+            # Создаем маску для усиления
+            enhance_mask = np.zeros_like(edges)
+
+            # Рисуем линии по всем точкам keep_points
+            points = []
             for point in keep_points:
                 x, y = int(point[0] - offset_x), int(point[1] - offset_y)
                 if 0 <= x < edges.shape[1] and 0 <= y < edges.shape[0]:
-                    cv2.circle(edges, (x, y), 10, 255, -1)
+                    points.append((x, y))
+
+            # Рисуем линии между последовательными точками
+            for i in range(len(points) - 1):
+                cv2.line(enhance_mask, points[i], points[i + 1], 255, 5)
+
+            # Применяем дилатацию для расширения усиленной области
+            kernel_enhance = np.ones((7, 7), np.uint8)
+            enhance_mask = cv2.dilate(enhance_mask, kernel_enhance, iterations=1)
+
+            # Объединяем с исходными границами
+            edges = cv2.bitwise_or(edges, enhance_mask)
 
         # 5. Морфологические операции для замыкания контуров
         kernel = np.ones((3, 3), np.uint8)
-        edges = cv2.dilate(edges, kernel, iterations=2)  # Увеличили iterations
+        edges = cv2.dilate(edges, kernel, iterations=2)
         edges = cv2.erode(edges, kernel, iterations=1)
 
         # Дополнительное закрытие для лучшего замыкания контуров
@@ -60,24 +72,25 @@ class CannyEdgeDetector:
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
 
         if contours:
-            # Если есть keep_points, находим контуры которые содержат эти точки
-            if keep_points:
+            # Если есть keep_points, находим контуры которые пересекают нарисованные линии
+            if keep_points and len(keep_points) > 0:
                 selected_contours = []
+
                 for contour in contours:
                     # Фильтруем слишком маленькие контуры
                     if cv2.contourArea(contour) < 100:
                         continue
 
+                    # Проверяем, пересекает ли контур какую-либо точку линии
                     for point in keep_points:
                         x, y = int(point[0] - offset_x), int(point[1] - offset_y)
-                        # Проверяем, находится ли точка внутри или рядом с контуром
-                        dist = cv2.pointPolygonTest(contour, (x, y), True)
-                        if dist >= -20:  # Точка внутри или близко к контуру
-                            selected_contours.append(contour)
-                            break
+                        if 0 <= x < edges.shape[1] and 0 <= y < edges.shape[0]:
+                            dist = cv2.pointPolygonTest(contour, (x, y), True)
+                            if dist >= -10:  # Точка внутри или близко к контуру
+                                selected_contours.append(contour)
+                                break
 
                 if selected_contours:
-                    # ВАЖНО: заполняем значением 255, не 1
                     cv2.drawContours(mask, selected_contours, -1, 255, -1)
                 else:
                     # Если не нашли подходящие контуры, берем самый большой

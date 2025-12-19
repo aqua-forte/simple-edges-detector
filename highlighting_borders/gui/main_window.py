@@ -75,6 +75,17 @@ class MainWindow(QMainWindow):
         self.mode_combo.currentTextChanged.connect(self.change_mode)
         mode_layout.addWidget(self.mode_combo)
 
+        # Кнопка очистки аннотаций
+        clear_annotations_btn = QPushButton("Очистить аннотации")
+        clear_annotations_btn.clicked.connect(self.clear_current_annotations)
+        mode_layout.addWidget(clear_annotations_btn)
+
+        # Информационная метка
+        info_label = QLabel("Режим 'Отметить границы':\nЗажмите ЛКМ и рисуйте\nлинию вдоль границы объекта")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #888; font-size: 10px; padding: 5px;")
+        mode_layout.addWidget(info_label)
+
         mode_group.setLayout(mode_layout)
         layout.addWidget(mode_group)
 
@@ -260,6 +271,19 @@ class MainWindow(QMainWindow):
         # Если это первое применение, включаем чекбокс автообновления
         if not self.auto_update:
             self.auto_update_checkbox.setEnabled(True)
+
+    def clear_current_annotations(self):
+        """Очищает текущие аннотации (прямоугольник или линии)"""
+        if self.mode == "rect":
+            self.rect = None
+            self.canvas.start_point = None
+            self.canvas.end_point = None
+        elif self.mode == "keep":
+            self.keep_points = []
+            self.canvas.keep_lines = []
+            self.canvas.current_line = []
+
+        self.canvas.update_display()
 
     def preview_mask(self):
         """Показывает предварительный просмотр маски"""
