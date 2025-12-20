@@ -7,8 +7,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QSlider, QFileDialog,
                              QComboBox, QGroupBox, QMessageBox, QCheckBox,
                              QRadioButton, QButtonGroup)
-from PyQt5.QtCore import Qt, QPoint
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QPolygon
+from PyQt5.QtCore import Qt
 
 # Добавляем корневую директорию проекта в путь
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +20,6 @@ from algorithms.canny import CannyEdgeDetector
 
 
 class MainWindow(QMainWindow):
-    # Стандартные значения параметров
     DEFAULT_THRESHOLD1 = 50
     DEFAULT_THRESHOLD2 = 150
     DEFAULT_BLUR_SIZE = 5
