@@ -1,15 +1,31 @@
 import cv2
 import numpy as np
+import sys
+import os
+
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QSlider, QFileDialog,
-                             QComboBox, QGroupBox, QMessageBox, QCheckBox)
+                             QComboBox, QGroupBox, QMessageBox, QCheckBox,
+                             QRadioButton, QButtonGroup)
 from PyQt5.QtCore import Qt, QPoint
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QPolygon
+
+# Добавляем корневую директорию проекта в путь
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from gui.canvas import ImageCanvas
 from algorithms.canny import CannyEdgeDetector
 
 
 class MainWindow(QMainWindow):
+    # Стандартные значения параметров
+    DEFAULT_THRESHOLD1 = 50
+    DEFAULT_THRESHOLD2 = 150
+    DEFAULT_BLUR_SIZE = 5
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Локализация и выделение границ объектов")
@@ -20,13 +36,15 @@ class MainWindow(QMainWindow):
         self.current_image = None
         self.mask = None
         self.rect = None
+        self.freeform_polygons = []  # Список произвольных областей
         self.keep_points = []
-        self.mode = "view"  # view, rect, keep
+        self.mode = "view"  # view, rect, freeform, keep
+        self.region_mode = "include"  # include (работать только в области), exclude (исключить область)
 
         # Параметры Canny
-        self.threshold1 = 50
-        self.threshold2 = 150
-        self.blur_size = 5
+        self.threshold1 = self.DEFAULT_THRESHOLD1
+        self.threshold2 = self.DEFAULT_THRESHOLD2
+        self.blur_size = self.DEFAULT_BLUR_SIZE
 
         # Флаг автообновления
         self.auto_update = False
@@ -71,9 +89,27 @@ class MainWindow(QMainWindow):
         mode_layout = QVBoxLayout()
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Просмотр", "Выделить область", "Отметить границы"])
+        self.mode_combo.addItems(["Просмотр", "Прямоугольная область", "Произвольная область", "Отметить границы"])
         self.mode_combo.currentTextChanged.connect(self.change_mode)
         mode_layout.addWidget(self.mode_combo)
+
+        # Режим обработки области
+        region_mode_label = QLabel("Режим обработки области:")
+        region_mode_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        mode_layout.addWidget(region_mode_label)
+
+        self.region_button_group = QButtonGroup()
+
+        self.include_radio = QRadioButton("Обработка внутри области")
+        self.include_radio.setChecked(True)
+        self.include_radio.toggled.connect(lambda: self.set_region_mode("include"))
+        self.region_button_group.addButton(self.include_radio)
+        mode_layout.addWidget(self.include_radio)
+
+        self.exclude_radio = QRadioButton("Обработка вне области")
+        self.exclude_radio.toggled.connect(lambda: self.set_region_mode("exclude"))
+        self.region_button_group.addButton(self.exclude_radio)
+        mode_layout.addWidget(self.exclude_radio)
 
         # Кнопка очистки аннотаций
         clear_annotations_btn = QPushButton("Очистить аннотации")
@@ -81,10 +117,11 @@ class MainWindow(QMainWindow):
         mode_layout.addWidget(clear_annotations_btn)
 
         # Информационная метка
-        info_label = QLabel("Режим 'Отметить границы':\nЗажмите ЛКМ и рисуйте\nлинию вдоль границы объекта")
-        info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: #888; font-size: 10px; padding: 5px;")
-        mode_layout.addWidget(info_label)
+        self.info_label = QLabel("Выберите режим работы")
+        self.info_label.setWordWrap(True)
+        self.info_label.setStyleSheet(
+            "color: #888; font-size: 10px; padding: 5px; background: #f0f0f0; border-radius: 5px; margin-top: 5px;")
+        mode_layout.addWidget(self.info_label)
 
         mode_group.setLayout(mode_layout)
         layout.addWidget(mode_group)
@@ -168,6 +205,16 @@ class MainWindow(QMainWindow):
 
         return panel
 
+    def set_region_mode(self, mode):
+        """Устанавливает режим обработки области"""
+        self.region_mode = mode
+        self.canvas.region_mode = mode
+        self.canvas.update_display()
+
+        # Обновляем цвет существующих аннотаций
+        if self.auto_update and self.original_image is not None and (self.rect or self.freeform_polygons):
+            self.apply_edge_detection()
+
     def toggle_auto_update(self, state):
         """Включает/выключает автообновление"""
         self.auto_update = (state == Qt.Checked)
@@ -175,7 +222,6 @@ class MainWindow(QMainWindow):
         if self.auto_update:
             self.apply_btn.setEnabled(False)
             self.apply_btn.setText("Автообновление активно")
-            # Если уже было хотя бы одно применение, обновляем сразу
             if self.original_image is not None:
                 self.apply_edge_detection()
         else:
@@ -194,25 +240,52 @@ class MainWindow(QMainWindow):
             self.current_image = self.original_image.copy()
             self.canvas.set_image(self.current_image)
             self.rect = None
+            self.freeform_polygons = []
             self.keep_points = []
             self.mask = None
-            # Отключаем автообновление при загрузке нового изображения
             self.auto_update_checkbox.setChecked(False)
 
     def change_mode(self, mode_text):
         mode_map = {
             "Просмотр": "view",
-            "Выделить область": "rect",
+            "Прямоугольная область": "rect",
+            "Произвольная область": "freeform",
             "Отметить границы": "keep"
         }
         self.mode = mode_map[mode_text]
         self.canvas.set_mode(self.mode)
 
+        # Обновляем информационную метку
+        info_texts = {
+            "view": "Режим просмотра",
+            "rect": "Нарисуйте прямоугольник,\nзажав ЛКМ",
+            "freeform": "Кликайте для создания точек.\nДвойной клик - завершить область",
+            "keep": "Зажмите ЛКМ и рисуйте\nлинию вдоль границы объекта"
+        }
+        self.info_label.setText(info_texts.get(self.mode, ""))
+
+    def clear_current_annotations(self):
+        """Очищает текущие аннотации"""
+        if self.mode == "rect":
+            self.rect = None
+            self.canvas.start_point = None
+            self.canvas.end_point = None
+        elif self.mode == "freeform":
+            self.freeform_polygons = []
+            self.canvas.freeform_polygons = []
+            self.canvas.current_polygon = []
+        elif self.mode == "keep":
+            self.keep_points = []
+            self.canvas.keep_lines = []
+            self.canvas.current_line = []
+            self.canvas.drawing_line = False  # Важно сбросить флаг
+
+        self.canvas.update_display()
+
     def update_threshold1(self, value):
         self.threshold1 = value
         self.threshold1_label.setText(f"Нижний порог: {value}")
 
-        # Автообновление при изменении параметра
         if self.auto_update and self.original_image is not None:
             self.apply_edge_detection()
 
@@ -220,7 +293,6 @@ class MainWindow(QMainWindow):
         self.threshold2 = value
         self.threshold2_label.setText(f"Верхний порог: {value}")
 
-        # Автообновление при изменении параметра
         if self.auto_update and self.original_image is not None:
             self.apply_edge_detection()
 
@@ -230,7 +302,6 @@ class MainWindow(QMainWindow):
         self.blur_size = value
         self.blur_label.setText(f"Размытие: {value}")
 
-        # Автообновление при изменении параметра
         if self.auto_update and self.original_image is not None:
             self.apply_edge_detection()
 
@@ -239,51 +310,51 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Загрузите изображение!")
             return
 
-        # Получаем область обработки
-        if self.rect:
-            x, y, w, h = self.rect
-            roi = self.original_image[y:y + h, x:x + w]
-        else:
-            roi = self.original_image
-            x, y = 0, 0
+        # Создаем маску области для обработки
+        region_mask = None
 
-        # Применяем Canny
+        if self.rect or self.freeform_polygons:
+            region_mask = np.zeros(self.original_image.shape[:2], dtype=np.uint8)
+
+            # Добавляем прямоугольник
+            if self.rect:
+                x, y, w, h = self.rect
+                cv2.rectangle(region_mask, (x, y), (x + w, y + h), 255, -1)
+
+            # Добавляем произвольные области
+            for polygon in self.freeform_polygons:
+                if len(polygon) > 2:
+                    pts = np.array(polygon, dtype=np.int32)
+                    cv2.fillPoly(region_mask, [pts], 255)
+
+            # Инвертируем маску если режим "исключить"
+            if self.region_mode == "exclude":
+                region_mask = cv2.bitwise_not(region_mask)
+
+        # Применяем Canny с ОТДЕЛЬНЫМИ ЛИНИЯМИ
         detector = CannyEdgeDetector(
             self.threshold1,
             self.threshold2,
             self.blur_size
         )
-        edges, mask = detector.detect_edges(roi, self.keep_points, x, y)
 
-        # Создаем результирующее изображение
-        result = self.original_image.copy()
+        # Передаем линии как список отдельных линий
+        edges, mask = detector.detect_edges(
+            self.original_image,
+            self.keep_points,  # Это все точки из всех линий
+            0,
+            0,
+            region_mask,
+            self.canvas.keep_lines  # Добавляем отдельные линии
+        )
 
-        if self.rect:
-            result[y:y + h, x:x + w] = edges
-        else:
-            result = edges
-
-        self.current_image = result
+        self.current_image = edges
         self.mask = mask
         self.canvas.set_image(self.current_image)
         self.canvas.set_mask(mask)
 
-        # Если это первое применение, включаем чекбокс автообновления
         if not self.auto_update:
             self.auto_update_checkbox.setEnabled(True)
-
-    def clear_current_annotations(self):
-        """Очищает текущие аннотации (прямоугольник или линии)"""
-        if self.mode == "rect":
-            self.rect = None
-            self.canvas.start_point = None
-            self.canvas.end_point = None
-        elif self.mode == "keep":
-            self.keep_points = []
-            self.canvas.keep_lines = []
-            self.canvas.current_line = []
-
-        self.canvas.update_display()
 
     def preview_mask(self):
         """Показывает предварительный просмотр маски"""
@@ -291,26 +362,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Сначала найдите границы!")
             return
 
-        # Создаем визуализацию маски
         preview = self.original_image.copy().astype(float)
-
-        # Создаем цветное наложение
         overlay = np.zeros_like(preview)
-        overlay[:, :, 1] = 255  # Зеленый канал
+        overlay[:, :, 1] = 255
 
-        # Создаем маску для наложения (0.0 - 1.0)
         alpha = (self.mask / 255.0).astype(float)
         alpha = np.stack([alpha] * 3, axis=-1)
 
-        # Смешиваем: где маска=255 показываем оригинал с зеленым оттенком,
-        # где маска=0 затемняем
         preview = np.where(
             self.mask[:, :, np.newaxis] > 0,
-            preview * 0.7 + overlay * 0.3,  # Оригинал + зеленый оттенок
-            preview * 0.3  # Затемненный фон
+            preview * 0.7 + overlay * 0.3,
+            preview * 0.3
         ).astype(np.uint8)
 
-        # Обводим контур красным
         contours, _ = cv2.findContours(self.mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(preview, contours, -1, (255, 0, 0), 3)
 
@@ -328,18 +392,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Сначала найдите границы!")
             return
 
-        # Проверяем, что маска не пустая
         if not np.any(self.mask):
             QMessageBox.warning(self, "Ошибка", "Маска пуста! Попробуйте изменить параметры.")
             return
 
-        # Создаем изображение с прозрачным фоном
         result = np.zeros((*self.original_image.shape[:2], 4), dtype=np.uint8)
-
-        # Копируем RGB каналы
         result[:, :, :3] = self.original_image
-
-        # Альфа-канал = маска
         result[:, :, 3] = self.mask
 
         file_path, _ = QFileDialog.getSaveFileName(
@@ -347,7 +405,6 @@ class MainWindow(QMainWindow):
         )
 
         if file_path:
-            # Конвертируем RGBA в BGRA для OpenCV
             result_bgra = cv2.cvtColor(result, cv2.COLOR_RGBA2BGRA)
             success = cv2.imwrite(file_path, result_bgra)
 
@@ -372,44 +429,55 @@ class MainWindow(QMainWindow):
 
     def reset(self):
         """Полный сброс всех параметров и аннотаций"""
-        if self.original_image is not None:
-            # Сбрасываем изображение
-            self.current_image = self.original_image.copy()
-            self.canvas.set_image(self.current_image)
+        if self.original_image is None:
+            return
 
-            # Очищаем аннотации
-            self.rect = None
-            self.keep_points = []
-            self.mask = None
-            self.canvas.clear_annotations()
+        reply = QMessageBox.question(
+            self,
+            'Подтверждение сброса',
+            'Вы уверены, что хотите сбросить все параметры?\n\n'
+            'Будут сброшены:\n'
+            '• Все аннотации (области и линии)\n'
+            '• Параметры Canny (пороги и размытие)\n'
+            '• Режим работы\n'
+            '• Автообновление',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
 
-            # Отключаем автообновление
-            self.auto_update_checkbox.setChecked(False)
+        if reply == QMessageBox.No:
+            return
 
-            # Сбрасываем режим на "Просмотр"
-            self.mode_combo.setCurrentIndex(0)  # Просмотр
+        self.current_image = self.original_image.copy()
+        self.canvas.set_image(self.current_image)
 
-            # Сбрасываем параметры Canny на стандартные
-            self.threshold1 = 50
-            self.threshold2 = 150
-            self.blur_size = 5
+        self.rect = None
+        self.freeform_polygons = []
+        self.keep_points = []
+        self.mask = None
+        self.canvas.clear_annotations()
 
-            # Обновляем UI элементы
-            self.threshold1_slider.setValue(self.threshold1)
-            self.threshold2_slider.setValue(self.threshold2)
-            self.blur_slider.setValue(self.blur_size)
+        self.auto_update_checkbox.setChecked(False)
+        self.mode_combo.setCurrentIndex(0)
+        self.include_radio.setChecked(True)
 
-            self.threshold1_label.setText(f"Нижний порог: {self.threshold1}")
-            self.threshold2_label.setText(f"Верхний порог: {self.threshold2}")
-            self.blur_label.setText(f"Размытие: {self.blur_size}")
+        self.threshold1 = self.DEFAULT_THRESHOLD1
+        self.threshold2 = self.DEFAULT_THRESHOLD2
+        self.blur_size = self.DEFAULT_BLUR_SIZE
 
-            QMessageBox.information(
-                self,
-                "Сброс выполнен",
-                "Все параметры сброшены на стандартные значения:\n"
-                "• Нижний порог: 50\n"
-                "• Верхний порог: 150\n"
-                "• Размытие: 5\n"
-                "• Режим: Просмотр\n"
-                "• Автообновление: выключено"
-            )
+        self.threshold1_slider.setValue(self.threshold1)
+        self.threshold2_slider.setValue(self.threshold2)
+        self.blur_slider.setValue(self.blur_size)
+
+        self.threshold1_label.setText(f"Нижний порог: {self.threshold1}")
+        self.threshold2_label.setText(f"Верхний порог: {self.threshold2}")
+        self.blur_label.setText(f"Размытие: {self.blur_size}")
+
+        QMessageBox.information(
+            self,
+            "Сброс выполнен",
+            f"✓ Все параметры успешно сброшены!\n\n"
+            f"Нижний порог: {self.DEFAULT_THRESHOLD1}\n"
+            f"Верхний порог: {self.DEFAULT_THRESHOLD2}\n"
+            f"Размытие: {self.DEFAULT_BLUR_SIZE}"
+        )

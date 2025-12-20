@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QLabel
 from PyQt5.QtCore import Qt, QPoint, QRect
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QPolygon, QBrush
 import numpy as np
 
 
@@ -16,15 +16,20 @@ class ImageCanvas(QLabel):
         self.pixmap = None
         self.mode = "view"
         self.mask = None
+        self.region_mode = "include"  # include или exclude
 
         # Для рисования прямоугольника
         self.drawing = False
         self.start_point = None
         self.end_point = None
 
-        # Для рисования линий границ (вместо точек)
-        self.keep_lines = []  # Список линий [(x1,y1), (x2,y2), ...]
-        self.current_line = []  # Текущая рисуемая линия
+        # Для произвольных областей
+        self.freeform_polygons = []  # Завершенные полигоны
+        self.current_polygon = []  # Текущий рисуемый полигон
+
+        # Для рисования линий границ
+        self.keep_lines = []
+        self.current_line = []
         self.drawing_line = False
 
         # Параметры масштабирования
@@ -56,9 +61,12 @@ class ImageCanvas(QLabel):
         """Очищает аннотации"""
         self.start_point = None
         self.end_point = None
+        self.freeform_polygons = []
+        self.current_polygon = []
         self.keep_lines = []
         self.current_line = []
         self.parent.rect = None
+        self.parent.freeform_polygons = []
         self.parent.keep_points = []
         self.update_display()
 
@@ -79,44 +87,71 @@ class ImageCanvas(QLabel):
         pixmap_width = self.pixmap.width()
         pixmap_height = self.pixmap.height()
 
-        # Масштабируем с сохранением пропорций
         scale = min(widget_width / pixmap_width, widget_height / pixmap_height)
         scaled_width = int(pixmap_width * scale)
         scaled_height = int(pixmap_height * scale)
 
-        # Вычисляем смещение для центрирования
         self.offset_x = (widget_width - scaled_width) // 2
         self.offset_y = (widget_height - scaled_height) // 2
 
-        # Коэффициенты масштабирования (от виджета к изображению)
         self.scale_x = pixmap_width / scaled_width
         self.scale_y = pixmap_height / scaled_height
 
-        # Масштабируем pixmap
         scaled_pixmap = self.pixmap.scaled(
             scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
 
-        # Создаем новый pixmap с аннотациями
         result_pixmap = QPixmap(widget_width, widget_height)
-        result_pixmap.fill(QColor(43, 43, 43))  # Фон как в стиле
+        result_pixmap.fill(QColor(43, 43, 43))
 
         painter = QPainter(result_pixmap)
-
-        # Рисуем масштабированное изображение по центру
         painter.drawPixmap(self.offset_x, self.offset_y, scaled_pixmap)
 
-        # Рисуем прямоугольник (координаты уже в пространстве виджета)
-        if self.start_point and self.end_point:
-            pen = QPen(QColor(0, 128, 255), 3)
-            painter.setPen(pen)
+        # Определяем цвет в зависимости от режима
+        region_color = QColor(0, 128, 255) if self.region_mode == "include" else QColor(255, 128, 0)
+        region_fill_color = QColor(0, 128, 255, 25) if self.region_mode == "include" else QColor(255, 128, 0, 25)
 
-            # Преобразуем координаты изображения в координаты виджета
+        # Рисуем прямоугольник
+        if self.start_point and self.end_point:
+            pen = QPen(region_color, 3)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(region_fill_color))
+
             widget_start = self.image_to_widget(self.start_point)
             widget_end = self.image_to_widget(self.end_point)
 
             rect = QRect(widget_start, widget_end)
             painter.drawRect(rect.normalized())
+
+        # Рисуем завершенные произвольные области
+        pen = QPen(region_color, 3)
+        painter.setPen(pen)
+        painter.setBrush(QBrush(region_fill_color))
+
+        for polygon_points in self.freeform_polygons:
+            if len(polygon_points) > 2:
+                q_polygon = QPolygon()
+                for pt in polygon_points:
+                    widget_pt = self.image_to_widget(QPoint(int(pt[0]), int(pt[1])))
+                    q_polygon.append(widget_pt)
+                painter.drawPolygon(q_polygon)
+
+        # Рисуем текущий рисуемый полигон
+        if len(self.current_polygon) > 0:
+            pen = QPen(region_color.lighter(120), 3)
+            painter.setPen(pen)
+
+            for i in range(len(self.current_polygon) - 1):
+                p1 = self.image_to_widget(QPoint(int(self.current_polygon[i][0]), int(self.current_polygon[i][1])))
+                p2 = self.image_to_widget(
+                    QPoint(int(self.current_polygon[i + 1][0]), int(self.current_polygon[i + 1][1])))
+                painter.drawLine(p1, p2)
+
+            # Рисуем точки
+            for pt in self.current_polygon:
+                widget_pt = self.image_to_widget(QPoint(int(pt[0]), int(pt[1])))
+                painter.setBrush(QBrush(region_color))
+                painter.drawEllipse(widget_pt, 5, 5)
 
         # Рисуем завершенные линии границ
         pen = QPen(QColor(255, 0, 0), 3)
@@ -147,18 +182,14 @@ class ImageCanvas(QLabel):
         if self.pixmap is None or self.image is None:
             return QPoint(0, 0)
 
-        # Вычитаем смещение
         x = pos.x() - self.offset_x
         y = pos.y() - self.offset_y
 
-        # Применяем масштабирование
         x = int(x * self.scale_x)
         y = int(y * self.scale_y)
 
-        # Ограничиваем координаты
         x = max(0, min(x, self.image.shape[1] - 1))
         y = max(0, min(y, self.image.shape[0] - 1))
-
         return QPoint(x, y)
 
     def image_to_widget(self, pos):
@@ -166,11 +197,9 @@ class ImageCanvas(QLabel):
         if self.pixmap is None:
             return pos
 
-        # Применяем обратное масштабирование
         x = int(pos.x() / self.scale_x)
         y = int(pos.y() / self.scale_y)
 
-        # Добавляем смещение
         x += self.offset_x
         y += self.offset_y
 
@@ -180,15 +209,18 @@ class ImageCanvas(QLabel):
         if self.image is None:
             return
 
-        # Конвертируем координаты в координаты изображения
         pos = self.widget_to_image(event.pos())
 
         if self.mode == "rect":
             self.drawing = True
             self.start_point = pos
             self.end_point = pos
+        elif self.mode == "freeform":
+            # Добавляем точку к текущему полигону
+            self.current_polygon.append((pos.x(), pos.y()))
+            self.update_display()
         elif self.mode == "keep":
-            # Начинаем рисовать новую линию
+            # Начинаем НОВУЮ линию
             self.drawing_line = True
             self.current_line = [(pos.x(), pos.y())]
 
@@ -199,12 +231,8 @@ class ImageCanvas(QLabel):
             self.end_point = pos
             self.update_display()
         elif self.drawing_line and self.mode == "keep":
-            # Добавляем точку к текущей линии
             self.current_line.append((pos.x(), pos.y()))
-
-            # Добавляем точку в keep_points родителя для алгоритма
             self.parent.keep_points.append((pos.x(), pos.y()))
-
             self.update_display()
 
     def mouseReleaseEvent(self, event):
@@ -212,20 +240,28 @@ class ImageCanvas(QLabel):
             self.drawing = False
             self.end_point = self.widget_to_image(event.pos())
 
-            # Сохраняем прямоугольник в родителе
             rect = QRect(self.start_point, self.end_point).normalized()
             self.parent.rect = (rect.x(), rect.y(), rect.width(), rect.height())
 
             self.update_display()
         elif self.drawing_line and self.mode == "keep":
-            # Завершаем рисование линии
             self.drawing_line = False
 
             if len(self.current_line) > 1:
-                # Сохраняем завершенную линию
+                # Сохраняем завершенную линию КАК ОТДЕЛЬНУЮ ЛИНИЮ
                 self.keep_lines.append(self.current_line.copy())
 
+            # Очищаем текущую линию для новой
             self.current_line = []
+            self.update_display()
+
+    def mouseDoubleClickEvent(self, event):
+        """Обработка двойного клика для завершения полигона"""
+        if self.mode == "freeform" and len(self.current_polygon) > 2:
+            # Завершаем текущий полигон
+            self.freeform_polygons.append(self.current_polygon.copy())
+            self.parent.freeform_polygons.append(self.current_polygon.copy())
+            self.current_polygon = []
             self.update_display()
 
     def resizeEvent(self, event):
