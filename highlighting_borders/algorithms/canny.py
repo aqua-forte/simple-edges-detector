@@ -45,7 +45,6 @@ class CannyEdgeDetector:
             edges = cv2.bitwise_and(edges, region_mask)
 
         # 5. Если есть линии keep, усиливаем границы вдоль них
-        # ВАЖНО: обрабатываем каждую линию ОТДЕЛЬНО, не соединяя их
         if keep_lines and len(keep_lines) > 0:
             enhance_mask = np.zeros_like(edges)
 
@@ -61,7 +60,6 @@ class CannyEdgeDetector:
                     if 0 <= x < edges.shape[1] and 0 <= y < edges.shape[0]:
                         line_points.append((x, y))
 
-                # Рисуем ЭТУ КОНКРЕТНУЮ линию (не соединяя с другими)
                 for i in range(len(line_points) - 1):
                     cv2.line(enhance_mask, line_points[i], line_points[i + 1], 255, 5)
 

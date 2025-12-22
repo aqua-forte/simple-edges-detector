@@ -9,7 +9,6 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QRadioButton, QButtonGroup)
 from PyQt5.QtCore import Qt
 
-# Добавляем корневую директорию проекта в путь
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
@@ -29,40 +28,33 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Локализация и выделение границ объектов")
         self.setGeometry(100, 100, 1400, 800)
 
-        # Переменные
         self.original_image = None
         self.current_image = None
         self.mask = None
         self.rect = None
-        self.freeform_polygons = []  # Список произвольных областей
+        self.freeform_polygons = []
         self.keep_points = []
-        self.mode = "view"  # view, rect, freeform, keep
-        self.region_mode = "include"  # include (работать только в области), exclude (исключить область)
+        self.mode = "view"
+        self.region_mode = "include"
 
-        # Параметры Canny
         self.threshold1 = self.DEFAULT_THRESHOLD1
         self.threshold2 = self.DEFAULT_THRESHOLD2
         self.blur_size = self.DEFAULT_BLUR_SIZE
 
-        # Флаг автообновления
         self.auto_update = False
 
         self.init_ui()
 
     def init_ui(self):
-        # Центральный виджет
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        # Основной layout
         main_layout = QHBoxLayout()
         central_widget.setLayout(main_layout)
 
-        # Левая панель управления
         control_panel = self.create_control_panel()
         main_layout.addWidget(control_panel, 1)
 
-        # Правая панель - холст
         self.canvas = ImageCanvas(self)
         main_layout.addWidget(self.canvas, 3)
 
@@ -109,7 +101,6 @@ class MainWindow(QMainWindow):
         self.region_button_group.addButton(self.exclude_radio)
         mode_layout.addWidget(self.exclude_radio)
 
-        # Кнопка очистки аннотаций
         clear_annotations_btn = QPushButton("Очистить аннотации")
         clear_annotations_btn.clicked.connect(self.clear_current_annotations)
         mode_layout.addWidget(clear_annotations_btn)
@@ -128,7 +119,6 @@ class MainWindow(QMainWindow):
         canny_group = QGroupBox("Параметры Canny Edge Detection")
         canny_layout = QVBoxLayout()
 
-        # Чекбокс автообновления
         self.auto_update_checkbox = QCheckBox("Автообновление в реальном времени")
         self.auto_update_checkbox.setChecked(False)
         self.auto_update_checkbox.stateChanged.connect(self.toggle_auto_update)
@@ -209,7 +199,6 @@ class MainWindow(QMainWindow):
         self.canvas.region_mode = mode
         self.canvas.update_display()
 
-        # Обновляем цвет существующих аннотаций
         if self.auto_update and self.original_image is not None and (self.rect or self.freeform_polygons):
             self.apply_edge_detection()
 
