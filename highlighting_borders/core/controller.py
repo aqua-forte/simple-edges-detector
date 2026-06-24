@@ -199,6 +199,20 @@ class EdgeDetectionController(QObject):
         success = cv2.imwrite(file_path, result_bgr)
         return success
 
+    def delete_selected_polygon(self, index):
+        """Removes a specific polygon from the model's list."""
+        if 0 <= index < len(self.model.freeform_polygons):
+            self.model.freeform_polygons.pop(index)
+            return True
+        return False
+
+    def delete_selected_line(self, index):
+        """Removes a specific line from the model's list."""
+        if 0 <= index < len(self.model.keep_lines):
+            self.model.keep_lines.pop(index)
+            return True
+        return False
+
     def reset(self):
         self.update_timer.stop()
         if self.worker is not None:

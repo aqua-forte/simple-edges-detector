@@ -43,6 +43,10 @@ class ImageCanvas(QLabel):
         self.is_panning = False
         self.last_pan_pos = QPoint(0, 0)
 
+        # Selection state
+        self.selected_polygon_idx = None
+        self.selected_line_idx = None
+
         self.setMouseTracking(True)
 
     def set_image(self, image):
@@ -138,12 +142,20 @@ class ImageCanvas(QLabel):
         painter.setPen(pen)
         painter.setBrush(QBrush(region_fill_color))
 
-        for polygon_points in self.freeform_polygons:
+        for idx, polygon_points in enumerate(self.freeform_polygons):
             if len(polygon_points) > 2:
                 q_polygon = QPolygon()
                 for pt in polygon_points:
                     widget_pt = self.image_to_widget(QPoint(int(pt[0]), int(pt[1])))
                     q_polygon.append(widget_pt)
+                
+                if idx == self.selected_polygon_idx:
+                    painter.setPen(QPen(Qt.yellow, 4))
+                    painter.setBrush(QBrush(QColor(255, 255, 0, 40)))
+                else:
+                    painter.setPen(pen)
+                    painter.setBrush(QBrush(region_fill_color))
+                
                 painter.drawPolygon(q_polygon)
 
         # Рисуем текущий рисуемый полигон
@@ -167,8 +179,13 @@ class ImageCanvas(QLabel):
         pen = QPen(QColor(255, 0, 0), 3)
         painter.setPen(pen)
 
-        for line in self.keep_lines:
+        for idx, line in enumerate(self.keep_lines):
             if len(line) > 1:
+                if idx == self.selected_line_idx:
+                    painter.setPen(QPen(Qt.yellow, 4))
+                else:
+                    painter.setPen(pen)
+                
                 for i in range(len(line) - 1):
                     p1 = self.image_to_widget(QPoint(int(line[i][0]), int(line[i][1])))
                     p2 = self.image_to_widget(QPoint(int(line[i + 1][0]), int(line[i + 1][1])))
@@ -186,6 +203,33 @@ class ImageCanvas(QLabel):
         painter.end()
 
         self.setPixmap(result_pixmap)
+
+    def delete_selected(self):
+        """Removes the selected polygon or line from both the canvas and the model."""
+        deleted = False
+        
+        if self.selected_polygon_idx is not None:
+            idx = self.selected_polygon_idx
+            if 0 <= idx < len(self.freeform_polygons):
+                self.freeform_polygons.pop(idx)
+                if 0 <= idx < len(self.parent.model.freeform_polygons):
+                    self.parent.model.freeform_polygons.pop(idx)
+                deleted = True
+            self.selected_polygon_idx = None
+
+        if self.selected_line_idx is not None:
+            idx = self.selected_line_idx
+            if 0 <= idx < len(self.keep_lines):
+                self.keep_lines.pop(idx)
+                if 0 <= idx < len(self.parent.model.keep_lines):
+                    self.parent.model.keep_lines.pop(idx)
+                deleted = True
+            self.selected_line_idx = None
+
+        if deleted:
+            self.update_display()
+            
+        return deleted
 
     def wheelEvent(self, event):
         """Handles zooming with the mouse wheel"""
@@ -233,6 +277,33 @@ class ImageCanvas(QLabel):
 
         return QPoint(x, y)
 
+    def mouseMoveEvent(self, event):
+        """Handles mouse movement for panning and drawing."""
+        if self.image is None:
+            return
+
+        # Handle Pan (Middle Mouse Button)
+        if self.is_panning:
+            current_pos = event.pos()
+            delta = current_pos - self.last_pan_pos
+            self.pan_offset += delta
+            self.last_pan_pos = current_pos
+            self.update_display()
+            return
+
+        # Handle Drawing (Rect/Freeform/Keep)
+        if self.drawing and self.mode == "rect":
+            self.end_point = self.widget_to_image(event.pos())
+            self.update_display()
+        elif self.mode == "freeform" and self.current_polygon:
+            # Optional: update last point of current polygon for visual feedback
+            pass 
+        elif self.drawing_line and self.mode == "keep":
+            # Add point to current line as mouse moves
+            pos = self.widget_to_image(event.pos())
+            self.current_line.append((pos.x(), pos.y()))
+            self.update_display()
+
     def mousePressEvent(self, event):
         if self.image is None:
             return
@@ -245,6 +316,29 @@ class ImageCanvas(QLabel):
             return
 
         pos = self.widget_to_image(event.pos())
+
+        if self.mode == "select":
+            self.selected_polygon_idx = None
+            self.selected_line_idx = None
+
+            # 1. Check polygons (point-in-polygon)
+            for idx, poly in enumerate(self.freeform_polygons):
+                if self._is_point_in_polygon(pos, poly):
+                    self.selected_polygon_idx = idx
+                    break
+
+            # 2. Check lines (distance to segment)
+            if self.selected_polygon_idx is None:
+                min_dist = 10 # pixels threshold
+                for idx, line in enumerate(self.keep_lines):
+                    for i in range(len(line) - 1):
+                        d = self._dist_point_to_segment(pos, line[i], line[i+1])
+                        if d < min_dist:
+                            min_dist = d
+                            self.selected_line_idx = idx
+
+            self.update_display()
+            return
 
         if self.mode == "rect":
             self.drawing = True
@@ -259,24 +353,55 @@ class ImageCanvas(QLabel):
             self.drawing_line = True
             self.current_line = [(pos.x(), pos.y())]
 
-    def mouseMoveEvent(self, event):
-        # Handle Pan
-        if self.is_panning:
-            delta = event.pos() - self.last_pan_pos
-            self.pan_offset += delta
-            self.last_pan_pos = event.pos()
-            self.update_display()
-            return
+    def _is_point_in_polygon(self, point, polygon):
+        """Standard Ray-Casting point-in-polygon algorithm"""
+        x, y = point.x(), point.y()
+        n = len(polygon)
+        inside = False
+        p1x, p1y = polygon[0]
+        for i in range(n + 1):
+            p2x, p2y = polygon[i % n]
+            if y > min(p1y, p2y):
+                if y <= max(p1y, p2y):
+                    if x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xints = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                        if p1x == p2x or x <= xints:
+                            inside = not inside
+            p1x, p1y = p2x, p2y
+        return inside
 
-        pos = self.widget_to_image(event.pos())
+    def _dist_point_to_segment(self, p, a, b):
+        """Calculate shortest distance from point p to line segment ab"""
+        px, py = p.x(), p.y()
+        ax, ay = a[0], a[1]
+        bx, by = b[0], b[1]
 
-        if self.drawing and self.mode == "rect":
-            self.end_point = pos
-            self.update_display()
-        elif self.drawing_line and self.mode == "keep":
-            self.current_line.append((pos.x(), pos.y()))
-            self.parent.model.keep_points.append((pos.x(), pos.y()))
-            self.update_display()
+        dx, dy = bx - ax, by - ay
+        if dx == 0 and dy == 0:
+            return np.hypot(px - ax, py - ay)
+
+        t = ((px - ax) * dx + (py - ay) * dy) / (dx*dx + dy*dy)
+        t = max(0, min(1, t))
+
+        nearest_x = ax + t * dx
+        nearest_y = ay + t * dy
+        return np.hypot(px - nearest_x, py - nearest_y)
+
+    def widget_to_image(self, pos):
+        """Преобразует координаты виджета в координаты изображения"""
+        if self.pixmap is None or self.image is None:
+            return QPoint(0, 0)
+
+        x = pos.x() - self.offset_x
+        y = pos.y() - self.offset_y
+
+        x = int(x * self.scale_x)
+        y = int(y * self.scale_y)
+
+        x = max(0, min(x, self.image.shape[1] - 1))
+        y = max(0, min(y, self.image.shape[0] - 1))
+        return QPoint(x, y)
 
     def mouseReleaseEvent(self, event):
         # Handle Pan

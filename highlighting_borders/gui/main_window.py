@@ -111,15 +111,9 @@ class MainWindow(QMainWindow):
         clear_annotations_btn.clicked.connect(self.clear_current_annotations)
         mode_layout.addWidget(clear_annotations_btn)
 
-        # Info label
-        self.info_label = QLabel("Select operation mode")
-        self.info_label.setWordWrap(True)
-        self.info_label.setStyleSheet(
-            "color: #888; font-size: 10px; padding: 5px; background: #f0f0f0; border-radius: 5px; margin-top: 5px;")
-        mode_layout.addWidget(self.info_label)
-
         mode_group.setLayout(mode_layout)
         layout.addWidget(mode_group)
+
 
         # Canny parameters group
         canny_group = QGroupBox("Canny Edge Detection Parameters")
@@ -288,19 +282,15 @@ class MainWindow(QMainWindow):
             "View": "view",
             "Rectangular Area": "rect",
             "Freeform Area": "freeform",
-            "Mark Boundaries": "keep"
+            "Mark Boundaries": "keep",
+            "Select": "select"
         }
         self.model.mode = mode_map[mode_text]
         self.canvas.set_mode(self.model.mode)
 
-        # Update info label
-        info_texts = {
-            "view": "View mode",
-            "rect": "Draw a rectangle by\nholding LMB",
-            "freeform": "Click to create points.\nDouble click to finish area",
-            "keep": "Hold LMB and draw a\nline along the object boundary"
-        }
-        self.info_label.setText(info_texts.get(self.model.mode, ""))
+    def delete_selected_annotation(self):
+        """Deletes the currently selected annotation from canvas and model."""
+        self.canvas.delete_selected()
 
     def clear_current_annotations(self):
         """Очищает текущие аннотации"""
