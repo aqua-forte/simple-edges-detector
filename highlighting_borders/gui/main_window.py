@@ -7,45 +7,37 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QSlider, QFileDialog,
                              QComboBox, QGroupBox, QMessageBox, QCheckBox,
                              QRadioButton, QButtonGroup)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
+
 project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from gui.canvas import ImageCanvas
-from algorithms.canny import CannyEdgeDetector
+from core.model import EdgeDetectionModel
+from core.controller import EdgeDetectionController
 
 
 class MainWindow(QMainWindow):
-    DEFAULT_THRESHOLD1 = 50
-    DEFAULT_THRESHOLD2 = 150
-    DEFAULT_BLUR_SIZE = 5
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Локализация и выделение границ объектов")
+        self.setWindowTitle("Edge Detection and Localization")
         self.setGeometry(100, 100, 1400, 800)
 
-        self.original_image = None
-        self.current_image = None
-        self.mask = None
-        self.rect = None
-        self.freeform_polygons = []
-        self.keep_points = []
-        self.mode = "view"
-        self.region_mode = "include"
-
-        self.threshold1 = self.DEFAULT_THRESHOLD1
-        self.threshold2 = self.DEFAULT_THRESHOLD2
-        self.blur_size = self.DEFAULT_BLUR_SIZE
-
-        self.auto_update = False
+        # MVC Initialization
+        self.model = EdgeDetectionModel()
+        self.controller = EdgeDetectionController(self.model)
+        
+        # Connect controller signals to view updates
+        self.controller.processing_finished.connect(self.on_processing_finished)
 
         self.init_ui()
 
     def init_ui(self):
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
@@ -58,55 +50,69 @@ class MainWindow(QMainWindow):
         self.canvas = ImageCanvas(self)
         main_layout.addWidget(self.canvas, 3)
 
+    @pyqtSlot(np.ndarray, np.ndarray, str)
+    def on_processing_finished(self, edges, mask, task_type):
+        """Slot to handle results from the worker thread."""
+        self.canvas.set_image(edges)
+        self.canvas.set_mask(mask)
+        
+        if task_type == "grabcut":
+            QMessageBox.information(self, "GrabCut", "Smart selection completed!")
+        
+        # Re-enable apply button if it was disabled
+        self.apply_btn.setEnabled(True)
+        self.apply_btn.setText("Find Edges")
+
+
     def create_control_panel(self):
         panel = QWidget()
         layout = QVBoxLayout()
         panel.setLayout(layout)
 
-        # Группа загрузки файла
-        file_group = QGroupBox("Файл")
+        # File group
+        file_group = QGroupBox("File")
         file_layout = QVBoxLayout()
 
-        load_btn = QPushButton("Загрузить изображение")
+        load_btn = QPushButton("Load Image")
         load_btn.clicked.connect(self.load_image)
         file_layout.addWidget(load_btn)
 
         file_group.setLayout(file_layout)
         layout.addWidget(file_group)
 
-        # Группа режимов
-        mode_group = QGroupBox("Режим работы")
+        # Mode group
+        mode_group = QGroupBox("Operation Mode")
         mode_layout = QVBoxLayout()
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Просмотр", "Прямоугольная область", "Произвольная область", "Отметить границы"])
+        self.mode_combo.addItems(["View", "Rectangular Area", "Freeform Area", "Mark Boundaries"])
         self.mode_combo.currentTextChanged.connect(self.change_mode)
         mode_layout.addWidget(self.mode_combo)
 
-        # Режим обработки области
-        region_mode_label = QLabel("Режим обработки области:")
+        # Region processing mode
+        region_mode_label = QLabel("Region processing mode:")
         region_mode_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
         mode_layout.addWidget(region_mode_label)
 
         self.region_button_group = QButtonGroup()
 
-        self.include_radio = QRadioButton("Обработка внутри области")
+        self.include_radio = QRadioButton("Process inside area")
         self.include_radio.setChecked(True)
         self.include_radio.toggled.connect(lambda: self.set_region_mode("include"))
         self.region_button_group.addButton(self.include_radio)
         mode_layout.addWidget(self.include_radio)
 
-        self.exclude_radio = QRadioButton("Обработка вне области")
+        self.exclude_radio = QRadioButton("Process outside area")
         self.exclude_radio.toggled.connect(lambda: self.set_region_mode("exclude"))
         self.region_button_group.addButton(self.exclude_radio)
         mode_layout.addWidget(self.exclude_radio)
 
-        clear_annotations_btn = QPushButton("Очистить аннотации")
+        clear_annotations_btn = QPushButton("Clear Annotations")
         clear_annotations_btn.clicked.connect(self.clear_current_annotations)
         mode_layout.addWidget(clear_annotations_btn)
 
-        # Информационная метка
-        self.info_label = QLabel("Выберите режим работы")
+        # Info label
+        self.info_label = QLabel("Select operation mode")
         self.info_label.setWordWrap(True)
         self.info_label.setStyleSheet(
             "color: #888; font-size: 10px; padding: 5px; background: #f0f0f0; border-radius: 5px; margin-top: 5px;")
@@ -115,74 +121,116 @@ class MainWindow(QMainWindow):
         mode_group.setLayout(mode_layout)
         layout.addWidget(mode_group)
 
-        # Группа параметров Canny
-        canny_group = QGroupBox("Параметры Canny Edge Detection")
+        # Canny parameters group
+        canny_group = QGroupBox("Canny Edge Detection Parameters")
         canny_layout = QVBoxLayout()
 
-        self.auto_update_checkbox = QCheckBox("Автообновление в реальном времени")
+        self.auto_update_checkbox = QCheckBox("Real-time auto-update")
         self.auto_update_checkbox.setChecked(False)
         self.auto_update_checkbox.stateChanged.connect(self.toggle_auto_update)
         canny_layout.addWidget(self.auto_update_checkbox)
 
-        # Нижний порог
-        self.threshold1_label = QLabel(f"Нижний порог: {self.threshold1}")
+        self.auto_threshold_checkbox = QCheckBox("Auto-calculate thresholds")
+        self.auto_threshold_checkbox.setChecked(False)
+        self.auto_threshold_checkbox.stateChanged.connect(self.toggle_auto_threshold)
+        canny_layout.addWidget(self.auto_threshold_checkbox)
+
+        # Lower threshold
+        self.threshold1_label = QLabel(f"Lower threshold: {self.model.threshold1}")
         canny_layout.addWidget(self.threshold1_label)
 
         self.threshold1_slider = QSlider(Qt.Horizontal)
         self.threshold1_slider.setMinimum(0)
         self.threshold1_slider.setMaximum(200)
-        self.threshold1_slider.setValue(self.threshold1)
+        self.threshold1_slider.setValue(self.model.threshold1)
         self.threshold1_slider.valueChanged.connect(self.update_threshold1)
         canny_layout.addWidget(self.threshold1_slider)
 
-        # Верхний порог
-        self.threshold2_label = QLabel(f"Верхний порог: {self.threshold2}")
+        # Upper threshold
+        self.threshold2_label = QLabel(f"Upper threshold: {self.model.threshold2}")
         canny_layout.addWidget(self.threshold2_label)
 
         self.threshold2_slider = QSlider(Qt.Horizontal)
         self.threshold2_slider.setMinimum(0)
         self.threshold2_slider.setMaximum(300)
-        self.threshold2_slider.setValue(self.threshold2)
+        self.threshold2_slider.setValue(self.model.threshold2)
         self.threshold2_slider.valueChanged.connect(self.update_threshold2)
         canny_layout.addWidget(self.threshold2_slider)
 
-        # Размытие
-        self.blur_label = QLabel(f"Размытие: {self.blur_size}")
+        # Blur
+        self.blur_label = QLabel(f"Blur: {self.model.blur_size}")
         canny_layout.addWidget(self.blur_label)
 
         self.blur_slider = QSlider(Qt.Horizontal)
         self.blur_slider.setMinimum(1)
         self.blur_slider.setMaximum(15)
-        self.blur_slider.setValue(self.blur_size)
+        self.blur_slider.setValue(self.model.blur_size)
         self.blur_slider.setSingleStep(2)
         self.blur_slider.valueChanged.connect(self.update_blur)
         canny_layout.addWidget(self.blur_slider)
 
-        # Кнопка применения
-        self.apply_btn = QPushButton("Найти границы")
+        # Closing
+        self.closing_label = QLabel(f"Closing: {self.model.closing_size}")
+        canny_layout.addWidget(self.closing_label)
+
+        self.closing_slider = QSlider(Qt.Horizontal)
+        self.closing_slider.setMinimum(0)
+        self.closing_slider.setMaximum(15)
+        self.closing_slider.setValue(self.model.closing_size)
+        self.closing_slider.valueChanged.connect(self.update_closing)
+        canny_layout.addWidget(self.closing_slider)
+
+        # Sigma Color
+        self.sigma_color_label = QLabel(f"Sigma Color: {self.model.sigma_color}")
+        canny_layout.addWidget(self.sigma_color_label)
+
+        self.sigma_color_slider = QSlider(Qt.Horizontal)
+        self.sigma_color_slider.setMinimum(1)
+        self.sigma_color_slider.setMaximum(200)
+        self.sigma_color_slider.setValue(self.model.sigma_color)
+        self.sigma_color_slider.valueChanged.connect(self.update_sigma_color)
+        canny_layout.addWidget(self.sigma_color_slider)
+
+        # Sigma Space
+        self.sigma_space_label = QLabel(f"Sigma Space: {self.model.sigma_space}")
+        canny_layout.addWidget(self.sigma_space_label)
+
+        self.sigma_space_slider = QSlider(Qt.Horizontal)
+        self.sigma_space_slider.setMinimum(1)
+        self.sigma_space_slider.setMaximum(200)
+        self.sigma_space_slider.setValue(self.model.sigma_space)
+        self.sigma_space_slider.valueChanged.connect(self.update_sigma_space)
+        canny_layout.addWidget(self.sigma_space_slider)
+
+        # Apply button
+        self.apply_btn = QPushButton("Find Edges")
         self.apply_btn.clicked.connect(self.apply_edge_detection)
         canny_layout.addWidget(self.apply_btn)
 
         canny_group.setLayout(canny_layout)
         layout.addWidget(canny_group)
 
-        # Группа действий
-        actions_group = QGroupBox("Действия")
+        # Actions group
+        actions_group = QGroupBox("Actions")
         actions_layout = QVBoxLayout()
 
-        preview_btn = QPushButton("Предпросмотр маски")
+        preview_btn = QPushButton("Preview Mask")
         preview_btn.clicked.connect(self.preview_mask)
         actions_layout.addWidget(preview_btn)
 
-        save_no_bg_btn = QPushButton("Сохранить без фона")
+        grabcut_btn = QPushButton("Smart Selection (GrabCut)")
+        grabcut_btn.clicked.connect(self.apply_grabcut)
+        actions_layout.addWidget(grabcut_btn)
+
+        save_no_bg_btn = QPushButton("Save without background")
         save_no_bg_btn.clicked.connect(self.save_without_background)
         actions_layout.addWidget(save_no_bg_btn)
 
-        save_with_border_btn = QPushButton("Сохранить с границей")
+        save_with_border_btn = QPushButton("Save with border")
         save_with_border_btn.clicked.connect(self.save_with_border)
         actions_layout.addWidget(save_with_border_btn)
 
-        reset_btn = QPushButton("Сбросить")
+        reset_btn = QPushButton("Reset")
         reset_btn.clicked.connect(self.reset)
         actions_layout.addWidget(reset_btn)
 
@@ -195,74 +243,78 @@ class MainWindow(QMainWindow):
 
     def set_region_mode(self, mode):
         """Устанавливает режим обработки области"""
-        self.region_mode = mode
+        self.model.region_mode = mode
         self.canvas.region_mode = mode
         self.canvas.update_display()
 
-        if self.auto_update and self.original_image is not None and (self.rect or self.freeform_polygons):
+        if self.model.auto_update and self.model.original_image is not None and (self.model.rect or self.model.freeform_polygons):
             self.apply_edge_detection()
 
     def toggle_auto_update(self, state):
-        """Включает/выключает автообновление"""
-        self.auto_update = (state == Qt.Checked)
+        """Enables/disables auto-update"""
+        self.model.auto_update = (state == Qt.Checked)
 
-        if self.auto_update:
+        if self.model.auto_update:
             self.apply_btn.setEnabled(False)
-            self.apply_btn.setText("Автообновление активно")
-            if self.original_image is not None:
+            self.apply_btn.setText("Auto-update active")
+            if self.model.original_image is not None:
                 self.apply_edge_detection()
         else:
             self.apply_btn.setEnabled(True)
-            self.apply_btn.setText("Найти границы")
+            self.apply_btn.setText("Find Edges")
+
+    def toggle_auto_threshold(self, state):
+        """Toggles automatic threshold calculation"""
+        self.model.auto_threshold = (state == Qt.Checked)
+        
+        if self.model.original_image is not None:
+            self.apply_edge_detection()
 
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите изображение", "",
+            self, "Select Image", "",
             "Images (*.png *.jpg *.jpeg *.bmp)"
         )
 
         if file_path:
-            self.original_image = cv2.imread(file_path)
-            self.original_image = cv2.cvtColor(self.original_image, cv2.COLOR_BGR2RGB)
-            self.current_image = self.original_image.copy()
-            self.canvas.set_image(self.current_image)
-            self.rect = None
-            self.freeform_polygons = []
-            self.keep_points = []
-            self.mask = None
-            self.auto_update_checkbox.setChecked(False)
+            if self.controller.load_image(file_path):
+                self.canvas.set_image(self.model.current_image)
+                self.auto_update_checkbox.setChecked(False)
+            else:
+                QMessageBox.warning(self, "Error", "Failed to load image!")
 
     def change_mode(self, mode_text):
         mode_map = {
-            "Просмотр": "view",
-            "Прямоугольная область": "rect",
-            "Произвольная область": "freeform",
-            "Отметить границы": "keep"
+            "View": "view",
+            "Rectangular Area": "rect",
+            "Freeform Area": "freeform",
+            "Mark Boundaries": "keep"
         }
-        self.mode = mode_map[mode_text]
-        self.canvas.set_mode(self.mode)
+        self.model.mode = mode_map[mode_text]
+        self.canvas.set_mode(self.model.mode)
 
-        # Обновляем информационную метку
+        # Update info label
         info_texts = {
-            "view": "Режим просмотра",
-            "rect": "Нарисуйте прямоугольник,\nзажав ЛКМ",
-            "freeform": "Кликайте для создания точек.\nДвойной клик - завершить область",
-            "keep": "Зажмите ЛКМ и рисуйте\nлинию вдоль границы объекта"
+            "view": "View mode",
+            "rect": "Draw a rectangle by\nholding LMB",
+            "freeform": "Click to create points.\nDouble click to finish area",
+            "keep": "Hold LMB and draw a\nline along the object boundary"
         }
-        self.info_label.setText(info_texts.get(self.mode, ""))
+        self.info_label.setText(info_texts.get(self.model.mode, ""))
 
     def clear_current_annotations(self):
         """Очищает текущие аннотации"""
-        if self.mode == "rect":
-            self.rect = None
+        if self.model.mode == "rect":
+            self.model.rect = None
             self.canvas.start_point = None
             self.canvas.end_point = None
-        elif self.mode == "freeform":
-            self.freeform_polygons = []
+        elif self.model.mode == "freeform":
+            self.model.freeform_polygons = []
             self.canvas.freeform_polygons = []
             self.canvas.current_polygon = []
-        elif self.mode == "keep":
-            self.keep_points = []
+        elif self.model.mode == "keep":
+            self.model.keep_points = []
+            self.model.keep_lines = []
             self.canvas.keep_lines = []
             self.canvas.current_line = []
             self.canvas.drawing_line = False  # Важно сбросить флаг
@@ -270,176 +322,147 @@ class MainWindow(QMainWindow):
         self.canvas.update_display()
 
     def update_threshold1(self, value):
-        self.threshold1 = value
-        self.threshold1_label.setText(f"Нижний порог: {value}")
+        self.model.threshold1 = value
+        self.threshold1_label.setText(f"Lower threshold: {value}")
 
-        if self.auto_update and self.original_image is not None:
+        if self.model.auto_update and self.model.original_image is not None:
             self.apply_edge_detection()
 
     def update_threshold2(self, value):
-        self.threshold2 = value
-        self.threshold2_label.setText(f"Верхний порог: {value}")
+        self.model.threshold2 = value
+        self.threshold2_label.setText(f"Upper threshold: {value}")
 
-        if self.auto_update and self.original_image is not None:
+        if self.model.auto_update and self.model.original_image is not None:
             self.apply_edge_detection()
 
     def update_blur(self, value):
         if value % 2 == 0:
             value += 1
-        self.blur_size = value
-        self.blur_label.setText(f"Размытие: {value}")
+        self.model.blur_size = value
+        self.blur_label.setText(f"Blur: {value}")
 
-        if self.auto_update and self.original_image is not None:
+        if self.model.auto_update and self.model.original_image is not None:
+            self.apply_edge_detection()
+
+    def update_closing(self, value):
+        self.model.closing_size = value
+        self.closing_label.setText(f"Closing: {value}")
+
+        if self.model.auto_update and self.model.original_image is not None:
+            self.apply_edge_detection()
+
+    def update_sigma_color(self, value):
+        self.model.sigma_color = value
+        self.sigma_color_label.setText(f"Sigma Color: {value}")
+
+        if self.model.auto_update and self.model.original_image is not None:
+            self.apply_edge_detection()
+
+    def update_sigma_space(self, value):
+        self.model.sigma_space = value
+        self.sigma_space_label.setText(f"Sigma Space: {value}")
+
+        if self.model.auto_update and self.model.original_image is not None:
             self.apply_edge_detection()
 
     def apply_edge_detection(self):
-        if self.original_image is None:
-            QMessageBox.warning(self, "Ошибка", "Загрузите изображение!")
+        if self.model.original_image is None:
+            QMessageBox.warning(self, "Error", "Please load an image!")
             return
 
-        # Создаем маску области для обработки
-        region_mask = None
+        if not self.controller.request_edge_detection():
+            QMessageBox.warning(self, "Error", "Edge detection failed to start!")
 
-        if self.rect or self.freeform_polygons:
-            region_mask = np.zeros(self.original_image.shape[:2], dtype=np.uint8)
+    def apply_grabcut(self):
+        """Performs foreground extraction using the GrabCut algorithm based on the selected rectangle."""
+        if self.model.original_image is None:
+            QMessageBox.warning(self, "Error", "Please load an image!")
+            return
 
-            # Добавляем прямоугольник
-            if self.rect:
-                x, y, w, h = self.rect
-                cv2.rectangle(region_mask, (x, y), (x + w, y + h), 255, -1)
+        result = self.controller.request_grabcut()
+        if result == "RECT_REQUIRED":
+            QMessageBox.warning(self, "Error", "Please select an object with a rectangle first!")
+        elif result == "BUSY":
+            QMessageBox.warning(self, "Busy", "A processing task is already running. Please wait.")
+        elif result is False:
+            QMessageBox.warning(self, "Error", "GrabCut failed to start!")
 
-            # Добавляем произвольные области
-            for polygon in self.freeform_polygons:
-                if len(polygon) > 2:
-                    pts = np.array(polygon, dtype=np.int32)
-                    cv2.fillPoly(region_mask, [pts], 255)
-
-            # Инвертируем маску если режим "исключить"
-            if self.region_mode == "exclude":
-                region_mask = cv2.bitwise_not(region_mask)
-
-        # Применяем Canny с ОТДЕЛЬНЫМИ ЛИНИЯМИ
-        detector = CannyEdgeDetector(
-            self.threshold1,
-            self.threshold2,
-            self.blur_size
-        )
-
-        # Передаем линии как список отдельных линий
-        edges, mask = detector.detect_edges(
-            self.original_image,
-            self.keep_points,  # Это все точки из всех линий
-            0,
-            0,
-            region_mask,
-            self.canvas.keep_lines  # Добавляем отдельные линии
-        )
-
-        self.current_image = edges
-        self.mask = mask
-        self.canvas.set_image(self.current_image)
-        self.canvas.set_mask(mask)
-
-        if not self.auto_update:
-            self.auto_update_checkbox.setEnabled(True)
 
     def preview_mask(self):
-        """Показывает предварительный просмотр маски"""
-        if self.mask is None:
-            QMessageBox.warning(self, "Ошибка", "Сначала найдите границы!")
+
+        """Shows mask preview"""
+        if self.model.mask is None:
+            QMessageBox.warning(self, "Error", "Please find edges first!")
             return
 
-        preview = self.original_image.copy().astype(float)
-        overlay = np.zeros_like(preview)
-        overlay[:, :, 1] = 255
-
-        alpha = (self.mask / 255.0).astype(float)
-        alpha = np.stack([alpha] * 3, axis=-1)
-
-        preview = np.where(
-            self.mask[:, :, np.newaxis] > 0,
-            preview * 0.7 + overlay * 0.3,
-            preview * 0.3
-        ).astype(np.uint8)
-
-        contours, _ = cv2.findContours(self.mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(preview, contours, -1, (255, 0, 0), 3)
-
-        self.current_image = preview
-        self.canvas.set_image(self.current_image)
+        preview = self.controller.generate_mask_preview()
+        self.model.current_image = preview
+        self.canvas.set_image(self.model.current_image)
 
         QMessageBox.information(
             self,
-            "Предпросмотр",
-            "Зеленая область - будет сохранена\nЗатемненная область - будет прозрачной"
+            "Preview",
+            "Green area - will be kept\nDarkened area - will be transparent"
         )
 
     def save_without_background(self):
-        if self.mask is None:
-            QMessageBox.warning(self, "Ошибка", "Сначала найдите границы!")
+        if self.model.mask is None:
+            QMessageBox.warning(self, "Error", "Please find edges first!")
             return
-
-        if not np.any(self.mask):
-            QMessageBox.warning(self, "Ошибка", "Маска пуста! Попробуйте изменить параметры.")
-            return
-
-        result = np.zeros((*self.original_image.shape[:2], 4), dtype=np.uint8)
-        result[:, :, :3] = self.original_image
-        result[:, :, 3] = self.mask
 
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить изображение", "", "PNG (*.png)"
+            self, "Save Image", "", "PNG (*.png)"
         )
 
         if file_path:
-            result_bgra = cv2.cvtColor(result, cv2.COLOR_RGBA2BGRA)
-            success = cv2.imwrite(file_path, result_bgra)
-
-            if success:
-                QMessageBox.information(self, "Успех", f"Изображение сохранено!\nПуть: {file_path}")
+            result = self.controller.save_without_background(file_path)
+            if result is True:
+                QMessageBox.information(self, "Success", f"Image saved!\nPath: {file_path}")
+            elif result == "EMPTY_MASK":
+                QMessageBox.warning(self, "Error", "Mask is empty! Try changing the parameters.")
             else:
-                QMessageBox.warning(self, "Ошибка", "Не удалось сохранить изображение!")
+                QMessageBox.warning(self, "Error", "Failed to save image!")
 
     def save_with_border(self):
-        if self.current_image is None:
-            QMessageBox.warning(self, "Ошибка", "Нет изображения для сохранения!")
+        if self.model.current_image is None:
+            QMessageBox.warning(self, "Error", "No image to save!")
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить изображение", "", "PNG (*.png);;JPEG (*.jpg)"
+            self, "Save Image", "", "PNG (*.png);;JPEG (*.jpg)"
         )
 
         if file_path:
-            result_bgr = cv2.cvtColor(self.current_image, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(file_path, result_bgr)
-            QMessageBox.information(self, "Успех", "Изображение сохранено!")
+            if self.controller.save_with_border(file_path):
+                QMessageBox.information(self, "Success", "Image saved!")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to save image!")
 
     def reset(self):
         """Полный сброс всех параметров и аннотаций"""
-        if self.original_image is None:
+        if self.model.original_image is None:
             return
 
-        self.current_image = self.original_image.copy()
-        self.canvas.set_image(self.current_image)
+        if self.controller.reset():
+            self.model.current_image = self.model.original_image.copy()
+            self.canvas.set_image(self.model.current_image)
+            self.canvas.clear_annotations()
 
-        self.rect = None
-        self.freeform_polygons = []
-        self.keep_points = []
-        self.mask = None
-        self.canvas.clear_annotations()
+            self.auto_update_checkbox.setChecked(False)
+            self.auto_threshold_checkbox.setChecked(False)
+            self.mode_combo.setCurrentIndex(0)
+            self.include_radio.setChecked(True)
 
-        self.auto_update_checkbox.setChecked(False)
-        self.mode_combo.setCurrentIndex(0)
-        self.include_radio.setChecked(True)
+            self.threshold1_slider.setValue(self.model.threshold1)
+            self.threshold2_slider.setValue(self.model.threshold2)
+            self.blur_slider.setValue(self.model.blur_size)
+            self.closing_slider.setValue(self.model.closing_size)
+            self.sigma_color_slider.setValue(self.model.sigma_color)
+            self.sigma_space_slider.setValue(self.model.sigma_space)
 
-        self.threshold1 = self.DEFAULT_THRESHOLD1
-        self.threshold2 = self.DEFAULT_THRESHOLD2
-        self.blur_size = self.DEFAULT_BLUR_SIZE
-
-        self.threshold1_slider.setValue(self.threshold1)
-        self.threshold2_slider.setValue(self.threshold2)
-        self.blur_slider.setValue(self.blur_size)
-
-        self.threshold1_label.setText(f"Нижний порог: {self.threshold1}")
-        self.threshold2_label.setText(f"Верхний порог: {self.threshold2}")
-        self.blur_label.setText(f"Размытие: {self.blur_size}")
+            self.threshold1_label.setText(f"Lower threshold: {self.model.threshold1}")
+            self.threshold2_label.setText(f"Upper threshold: {self.model.threshold2}")
+            self.blur_label.setText(f"Blur: {self.model.blur_size}")
+            self.closing_label.setText(f"Closing: {self.model.closing_size}")
+            self.sigma_color_label.setText(f"Sigma Color: {self.model.sigma_color}")
+            self.sigma_space_label.setText(f"Sigma Space: {self.model.sigma_space}")

@@ -38,6 +38,11 @@ class ImageCanvas(QLabel):
         self.offset_x = 0
         self.offset_y = 0
 
+        self.current_zoom = 1.0
+        self.pan_offset = QPoint(0, 0)
+        self.is_panning = False
+        self.last_pan_pos = QPoint(0, 0)
+
         self.setMouseTracking(True)
 
     def set_image(self, image):
@@ -65,38 +70,43 @@ class ImageCanvas(QLabel):
         self.current_polygon = []
         self.keep_lines = []
         self.current_line = []
-        self.parent.rect = None
-        self.parent.freeform_polygons = []
-        self.parent.keep_points = []
+        self.parent.model.rect = None
+        self.parent.model.freeform_polygons = []
+        self.parent.model.keep_points = []
+        self.parent.model.keep_lines = []
         self.update_display()
 
     def update_display(self):
-        """Обновляет отображение"""
+        """Updates the canvas visualization with zoom and pan."""
         if self.image is None:
             return
 
         h, w = self.image.shape[:2]
         bytes_per_line = 3 * w
-        q_image = QImage(self.image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        
+        # Create QImage from numpy array
+        q_image = QImage(self.image.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
 
         self.pixmap = QPixmap.fromImage(q_image)
 
-        # Вычисляем параметры масштабирования
         widget_width = self.width()
         widget_height = self.height()
-        pixmap_width = self.pixmap.width()
-        pixmap_height = self.pixmap.height()
+        
+        # Base scale to fit the image in the widget
+        base_scale = min(widget_width / w, widget_height / h)
+        effective_scale = base_scale * self.current_zoom
 
-        scale = min(widget_width / pixmap_width, widget_height / pixmap_height)
-        scaled_width = int(pixmap_width * scale)
-        scaled_height = int(pixmap_height * scale)
+        scaled_width = int(w * effective_scale)
+        scaled_height = int(h * effective_scale)
 
-        self.offset_x = (widget_width - scaled_width) // 2
-        self.offset_y = (widget_height - scaled_height) // 2
+        # Center the image and apply pan offset
+        self.offset_x = (widget_width - scaled_width) // 2 + self.pan_offset.x()
+        self.offset_y = (widget_height - scaled_height) // 2 + self.pan_offset.y()
 
-        self.scale_x = pixmap_width / scaled_width
-        self.scale_y = pixmap_height / scaled_height
+        self.scale_x = 1.0 / effective_scale
+        self.scale_y = 1.0 / effective_scale
 
+        # Scale the pixmap for drawing
         scaled_pixmap = self.pixmap.scaled(
             scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
@@ -177,6 +187,24 @@ class ImageCanvas(QLabel):
 
         self.setPixmap(result_pixmap)
 
+    def wheelEvent(self, event):
+        """Handles zooming with the mouse wheel"""
+        if self.image is None:
+            return
+
+        zoom_in_factor = 1.25
+        zoom_out_factor = 1 / zoom_in_factor
+
+        if event.angleDelta().y() > 0:
+            self.current_zoom *= zoom_in_factor
+        else:
+            self.current_zoom *= zoom_out_factor
+
+        # Limit zoom levels
+        self.current_zoom = max(0.1, min(self.current_zoom, 10.0))
+        
+        self.update_display()
+
     def widget_to_image(self, pos):
         """Преобразует координаты виджета в координаты изображения"""
         if self.pixmap is None or self.image is None:
@@ -209,6 +237,13 @@ class ImageCanvas(QLabel):
         if self.image is None:
             return
 
+        # Handle Pan (Middle Mouse Button)
+        if event.button() == Qt.MiddleButton:
+            self.is_panning = True
+            self.last_pan_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            return
+
         pos = self.widget_to_image(event.pos())
 
         if self.mode == "rect":
@@ -225,6 +260,14 @@ class ImageCanvas(QLabel):
             self.current_line = [(pos.x(), pos.y())]
 
     def mouseMoveEvent(self, event):
+        # Handle Pan
+        if self.is_panning:
+            delta = event.pos() - self.last_pan_pos
+            self.pan_offset += delta
+            self.last_pan_pos = event.pos()
+            self.update_display()
+            return
+
         pos = self.widget_to_image(event.pos())
 
         if self.drawing and self.mode == "rect":
@@ -232,24 +275,32 @@ class ImageCanvas(QLabel):
             self.update_display()
         elif self.drawing_line and self.mode == "keep":
             self.current_line.append((pos.x(), pos.y()))
-            self.parent.keep_points.append((pos.x(), pos.y()))
+            self.parent.model.keep_points.append((pos.x(), pos.y()))
             self.update_display()
 
     def mouseReleaseEvent(self, event):
+        # Handle Pan
+        if self.is_panning:
+            self.is_panning = False
+            self.setCursor(Qt.ArrowCursor if self.mode == "view" else Qt.CrossCursor)
+            return
+
         if self.drawing and self.mode == "rect":
             self.drawing = False
             self.end_point = self.widget_to_image(event.pos())
 
             rect = QRect(self.start_point, self.end_point).normalized()
-            self.parent.rect = (rect.x(), rect.y(), rect.width(), rect.height())
+            self.parent.model.rect = (rect.x(), rect.y(), rect.width(), rect.height())
 
             self.update_display()
         elif self.drawing_line and self.mode == "keep":
             self.drawing_line = False
 
             if len(self.current_line) > 1:
-                # Сохраняем завершенную линию КАК ОТДЕЛЬНУЮ ЛИНИЮ
-                self.keep_lines.append(self.current_line.copy())
+                # Сохраняем завершенную линию и в холсте, и в модели
+                line_copy = self.current_line.copy()
+                self.keep_lines.append(line_copy)
+                self.parent.model.keep_lines.append(line_copy)
 
             # Очищаем текущую линию для новой
             self.current_line = []
@@ -260,7 +311,7 @@ class ImageCanvas(QLabel):
         if self.mode == "freeform" and len(self.current_polygon) > 2:
             # Завершаем текущий полигон
             self.freeform_polygons.append(self.current_polygon.copy())
-            self.parent.freeform_polygons.append(self.current_polygon.copy())
+            self.parent.model.freeform_polygons.append(self.current_polygon.copy())
             self.current_polygon = []
             self.update_display()
 
