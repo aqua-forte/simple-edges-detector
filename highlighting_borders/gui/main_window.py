@@ -419,22 +419,6 @@ class MainWindow(QMainWindow):
         if self.original_image is None:
             return
 
-        reply = QMessageBox.question(
-            self,
-            'Подтверждение сброса',
-            'Вы уверены, что хотите сбросить все параметры?\n\n'
-            'Будут сброшены:\n'
-            '• Все аннотации (области и линии)\n'
-            '• Параметры Canny (пороги и размытие)\n'
-            '• Режим работы\n'
-            '• Автообновление',
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-
-        if reply == QMessageBox.No:
-            return
-
         self.current_image = self.original_image.copy()
         self.canvas.set_image(self.current_image)
 
@@ -459,12 +443,3 @@ class MainWindow(QMainWindow):
         self.threshold1_label.setText(f"Нижний порог: {self.threshold1}")
         self.threshold2_label.setText(f"Верхний порог: {self.threshold2}")
         self.blur_label.setText(f"Размытие: {self.blur_size}")
-
-        QMessageBox.information(
-            self,
-            "Сброс выполнен",
-            f"✓ Все параметры успешно сброшены!\n\n"
-            f"Нижний порог: {self.DEFAULT_THRESHOLD1}\n"
-            f"Верхний порог: {self.DEFAULT_THRESHOLD2}\n"
-            f"Размытие: {self.DEFAULT_BLUR_SIZE}"
-        )
